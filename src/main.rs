@@ -135,46 +135,38 @@ fn monitor_process(targets: Vec<String>) {
         // Print header
         execute!(stdout(), MoveTo(0, 0), Clear(ClearType::FromCursorDown)).unwrap();
 
-        let mut header = String::new();
-        if is_all {
-            header.push_str(&format!("{} ", "SYSTEM".bold().yellow()));
-            let mut parts = Vec::new();
-            for &metric in &order {
-                match metric {
-                    "cpu" => {
-                        let global_cpu = sys.global_cpu_usage();
-                        parts.push(format!("CPU: {} {:.2}%", get_bar(global_cpu), global_cpu));
-                    }
-                    "mem" => {
-                        let used_mem = sys.used_memory() as f32;
-                        let mem_pct = if total_mem > 0.0 { (used_mem / total_mem) * 100.0 } else { 0.0 };
-                        parts.push(format!("Mem: {} {:.2}% ({:.1}/{:.1} GB)",
-                            get_bar(mem_pct), mem_pct,
-                            used_mem / 1024.0 / 1024.0 / 1024.0,
-                            total_mem / 1024.0 / 1024.0 / 1024.0
-                        ));
-                    }
-                    "gpu" => {
-                        if let Some(g) = gpu.first() {
-                            parts.push(format!("GPU: {} {}% | Temp: {}°C | Mem: {}GB", get_bar(g.gpu as f32), g.gpu, g.temperature, g.memory_used / 1024 / 1024 / 1024));
-                        } else {
-                            parts.push("GPU: ?".to_string());
-                        }
-                    }
-                    _ => {}
+        let mut parts = Vec::new();
+        for &metric in &order {
+            match metric {
+                "cpu" if is_all => {
+                    let global_cpu = sys.global_cpu_usage();
+                    parts.push(format!("CPU: {} {:.2}%", get_bar(global_cpu), global_cpu));
                 }
-            }
-
-            if parts.is_empty() {
-                header.push_str("?");
-            } else {
-                header.push_str(&parts.join(" | "));
+                "mem" if is_all => {
+                    let used_mem = sys.used_memory() as f32;
+                    let mem_pct = if total_mem > 0.0 { (used_mem / total_mem) * 100.0 } else { 0.0 };
+                    parts.push(format!("Mem: {} {:.2}% ({:.1}/{:.1} GB)",
+                        get_bar(mem_pct), mem_pct,
+                        used_mem / 1024.0 / 1024.0 / 1024.0,
+                        total_mem / 1024.0 / 1024.0 / 1024.0
+                    ));
+                }
+                "gpu" if is_all => {
+                    if let Some(g) = gpu.first() {
+                        parts.push(format!("GPU: {} {}% | Temp: {}°C | Mem: {}GB", get_bar(g.gpu as f32), g.gpu, g.temperature, g.memory_used / 1024 / 1024 / 1024));
+                    } else {
+                        parts.push("GPU: ?".to_string());
+                    }
+                }
+                _ => {}
             }
         }
 
-        if !header.is_empty() {
-            print!("{}\r\n", header);
-            print!("\r\n");
+        if !parts.is_empty() {
+            let label = if is_all { "SYSTEM" } else { "GLOBAL" };
+            print!("{} {}\r\n\r\n", label.bold().yellow(), parts.join(" | "));
+        } else if is_all {
+            print!("{} ?\r\n\r\n", "SYSTEM".bold().yellow());
         }
         let mut proc_list: Vec<_> = sys.processes().iter().collect();
         proc_list.sort_by(|a, b| b.1.cpu_usage().partial_cmp(&a.1.cpu_usage()).unwrap_or(std::cmp::Ordering::Equal));
@@ -188,24 +180,39 @@ fn monitor_process(targets: Vec<String>) {
             }).map(|s| s.as_str());
 
             if let Some(t) = matched_target {
-                let mut output = format!("{} - {}: PID = {}, Name = {}", t.bold().green(), "Process".bold(), pid, proc_name.green());
-                
-                if order.is_empty() {
-                    output.push_str(" ?");
+                let mut output = if t == pid_str {
+                    format!("{} Name = {}", t.bold().green(), proc_name.green())
                 } else {
-                    for &metric in &order {
-                        match metric {
-                            "cpu" => {
-                                let cpu_usage = proc.cpu_usage() / num_cpus;
-                                output.push_str(&format!(", CPU = {} {:.2}%", get_bar(cpu_usage), cpu_usage));
-                            }
-                            "mem" => {
-                                let mem_pct = (proc.memory() as f32 / total_mem) * 100.0;
-                                output.push_str(&format!(", Mem = {} {:.2}%", get_bar(mem_pct), mem_pct));
-                            }
-                            _ => {}
+                    format!("{} - {}: PID = {}, Name = {}", t.bold().green(), "Process".bold(), pid, proc_name.green())
+                };
+                
+                let mut metric_added = false;
+                for &metric in &order {
+                    match metric {
+                        "cpu" => {
+                            let cpu_usage = proc.cpu_usage() / num_cpus;
+                            output.push_str(&format!(", CPU = {} {:.2}%", get_bar(cpu_usage), cpu_usage));
+                            metric_added = true;
                         }
+                        "mem" => {
+                            let mem_pct = (proc.memory() as f32 / total_mem) * 100.0;
+                            output.push_str(&format!(", Mem = {} {:.2}%", get_bar(mem_pct), mem_pct));
+                            metric_added = true;
+                        }
+                        "gpu" => {
+                            let label = format!("GPU{}", ":G".truecolor(255, 165, 0));
+                            if let Some(g) = gpu.first() {
+                                output.push_str(&format!(", {} = {} {}%", label, get_bar(g.gpu as f32), g.gpu));
+                            } else {
+                                output.push_str(&format!(", {} = ?", label));
+                            }
+                            metric_added = true;
+                        }
+                        _ => {}
                     }
+                }
+                if !metric_added {
+                    output.push_str(" ?");
                 }
                 
                 print!("{}\r\n", output);
