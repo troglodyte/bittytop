@@ -95,8 +95,7 @@ fn monitor_process(targets: Vec<String>) {
             let used_mem = sys.used_memory() as f32;
             let mem_pct = if total_mem > 0.0 { (used_mem / total_mem) * 100.0 } else { 0.0 };
 
-            println!("{} {} CPU: {} {:.2}% | Mem: {} {:.2}% ({:.1}/{:.1} GB)",
-                "bittytop:".bold().blue(),
+            println!("{} CPU: {} {:.2}% | Mem: {} {:.2}% ({:.1}/{:.1} GB)",
                 "SYSTEM".bold().yellow(),
                 get_bar(global_cpu), global_cpu,
                 get_bar(mem_pct), mem_pct,
@@ -108,9 +107,9 @@ fn monitor_process(targets: Vec<String>) {
 
         if show_gpu {
             if let Some(g) = gpu.first() {
-                println!("{} GPU: {} {}% | Temp: {}°C | Mem: {}GB", "bittytop:".bold().blue(), get_bar(g.gpu as f32), g.gpu, g.temperature, g.memory_used / 1024 / 1024 / 1024);
+                println!("GPU: {} {}% | Temp: {}°C | Mem: {}GB", get_bar(g.gpu as f32), g.gpu, g.temperature, g.memory_used / 1024 / 1024 / 1024);
             } else {
-                 println!("{} GPU: N/A", "bittytop:".bold().blue());
+                 println!("GPU: N/A");
             }
             println!();
         }
@@ -128,7 +127,7 @@ fn monitor_process(targets: Vec<String>) {
             }).map(|s| s.as_str());
 
             if let Some(t) = matched_target {
-                let mut output = format!("{} {} - {}: PID = {}, Name = {}", "bittytop:".bold().blue(), t.bold().green(), "Process".bold(), pid, proc_name.green());
+                let mut output = format!("{} - {}: PID = {}, Name = {}", t.bold().green(), "Process".bold(), pid, proc_name.green());
                 
                 if show_cpu {
                     let cpu_usage = proc.cpu_usage() / num_cpus;
@@ -148,7 +147,7 @@ fn monitor_process(targets: Vec<String>) {
             let other_targets: Vec<_> = targets.iter().filter(|t| *t != "*").collect();
             if !other_targets.is_empty() {
                 let targets_str = other_targets.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
-                println!("{} {} - {}", "bittytop:".bold().blue(), targets_str.bold().green(), "Process not found or exited.".red());
+                println!("{} - {}", targets_str.bold().green(), "Process not found or exited.".red());
             }
         }
 
