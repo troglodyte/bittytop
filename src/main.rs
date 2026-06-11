@@ -4,7 +4,7 @@ use std::time::Duration;
 use colored::*;
 use sysinfo::System;
 use machine_info::Machine;
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::cursor::{Hide, Show};
 use crossterm::ExecutableCommand;
@@ -68,12 +68,14 @@ fn monitor_process(targets: Vec<String>) {
         // Handle input
         if event::poll(Duration::from_millis(100)).unwrap() {
             if let Event::Key(key) = event::read().unwrap() {
-                match key.code {
-                    KeyCode::Char('c') => show_cpu = !show_cpu,
-                    KeyCode::Char('m') => show_mem = !show_mem,
-                    KeyCode::Char('g') => show_gpu = !show_gpu,
-                    KeyCode::Char('q') => break,
-                    _ => {}
+                if key.kind == KeyEventKind::Press {
+                    match key.code {
+                        KeyCode::Char('c') => show_cpu = !show_cpu,
+                        KeyCode::Char('m') => show_mem = !show_mem,
+                        KeyCode::Char('g') => show_gpu = !show_gpu,
+                        KeyCode::Char('q') => break,
+                        _ => {}
+                    }
                 }
             }
         }
@@ -89,28 +91,45 @@ fn monitor_process(targets: Vec<String>) {
         // Print header
         print!("{}[2J{}[1;1H", 27 as char, 27 as char); // Clear screen
 
+        let mut header = String::new();
         if is_all {
-            let global_cpu = sys.global_cpu_usage();
-            let total_mem = sys.total_memory() as f32;
-            let used_mem = sys.used_memory() as f32;
-            let mem_pct = if total_mem > 0.0 { (used_mem / total_mem) * 100.0 } else { 0.0 };
+            let mut system_parts = Vec::new();
+            if show_cpu {
+                let global_cpu = sys.global_cpu_usage();
+                system_parts.push(format!("CPU: {} {:.2}%", get_bar(global_cpu), global_cpu));
+            }
+            if show_mem {
+                let total_mem = sys.total_memory() as f32;
+                let used_mem = sys.used_memory() as f32;
+                let mem_pct = if total_mem > 0.0 { (used_mem / total_mem) * 100.0 } else { 0.0 };
+                system_parts.push(format!("Mem: {} {:.2}% ({:.1}/{:.1} GB)",
+                    get_bar(mem_pct), mem_pct,
+                    used_mem / 1024.0 / 1024.0 / 1024.0,
+                    total_mem / 1024.0 / 1024.0 / 1024.0
+                ));
+            }
 
-            println!("{} CPU: {} {:.2}% | Mem: {} {:.2}% ({:.1}/{:.1} GB)",
-                "SYSTEM".bold().yellow(),
-                get_bar(global_cpu), global_cpu,
-                get_bar(mem_pct), mem_pct,
-                used_mem / 1024.0 / 1024.0 / 1024.0,
-                total_mem / 1024.0 / 1024.0 / 1024.0
-            );
-            println!();
+            if !system_parts.is_empty() {
+                header.push_str(&format!("{} ", "SYSTEM".bold().yellow()));
+                header.push_str(&system_parts.join(" | "));
+            } else if show_gpu {
+                header.push_str(&format!("{}", "SYSTEM".bold().yellow()));
+            }
         }
 
         if show_gpu {
-            if let Some(g) = gpu.first() {
-                println!("GPU: {} {}% | Temp: {}°C | Mem: {}GB", get_bar(g.gpu as f32), g.gpu, g.temperature, g.memory_used / 1024 / 1024 / 1024);
-            } else {
-                 println!("GPU: N/A");
+            if !header.is_empty() {
+                header.push_str(" | ");
             }
+            if let Some(g) = gpu.first() {
+                header.push_str(&format!("GPU: {} {}% | Temp: {}°C | Mem: {}GB", get_bar(g.gpu as f32), g.gpu, g.temperature, g.memory_used / 1024 / 1024 / 1024));
+            } else {
+                 header.push_str("GPU: ?");
+            }
+        }
+
+        if !header.is_empty() {
+            println!("{}", header);
             println!();
         }
 
