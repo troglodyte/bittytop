@@ -22,18 +22,28 @@ fn main() {
     disable_raw_mode().unwrap();
 }
 
-fn get_bar(percentage: f32, width: usize) -> String {
-    let filled = (percentage.clamp(0.0, 100.0) / 100.0 * width as f32).round() as usize;
-    let empty = width - filled;
-    format!("[{}{}]", "█".repeat(filled).cyan(), "░".repeat(empty))
+fn get_bar(percentage: f32) -> String {
+    let blocks = [" ", "\u{2581}", "\u{2582}", "\u{2583}", "\u{2584}", "\u{2585}", "\u{2586}", "\u{2587}", "\u{2588}"];
+    let index = (((percentage.clamp(0.0, 100.0) / 100.0) * 8.0).ceil() as usize).max(1).min(8);
+    let bar = blocks[index];
+
+    if percentage < 33.0 {
+        bar.green().on_bright_black().to_string()
+    } else if percentage < 66.0 {
+        bar.yellow().on_bright_black().to_string()
+    } else {
+        bar.red().on_bright_black().to_string()
+    }
 }
 
 fn monitor_process(target: &str) {
     let mut sys = System::new_all();
     let machine = Machine::new();
     
-    // Initial refresh
+    // Initial refresh and wait to ensure accurate first measurements
     sys.refresh_all();
+    let num_cpus = sys.cpus().len().max(1) as f32;
+    thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
     
     let mut show_cpu = true;
     let mut show_mem = true;
@@ -53,8 +63,9 @@ fn monitor_process(target: &str) {
             }
         }
 
-        // Refresh everything
-        sys.refresh_all();
+        // Refresh necessary components
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        sys.refresh_memory();
         let gpu = machine.graphics_status(); 
 
         let mut found = false;
@@ -63,13 +74,14 @@ fn monitor_process(target: &str) {
         print!("{}[2J{}[1;1H", 27 as char, 27 as char); // Clear screen
         if show_gpu {
             if let Some(g) = gpu.first() {
-                println!("{} GPU: {} {}% | Temp: {}°C | Mem: {}GB", "bittytop:".bold().blue(), get_bar(g.gpu as f32, 10), g.gpu, g.temperature, g.memory_used / 1024 / 1024 / 1024);
+                println!("{} GPU: {} {}% | Temp: {}°C | Mem: {}GB", "bittytop:".bold().blue(), get_bar(g.gpu as f32), g.gpu, g.temperature, g.memory_used / 1024 / 1024 / 1024);
             } else {
                  println!("{} GPU: N/A", "bittytop:".bold().blue());
             }
             println!();
         }
 
+        let total_mem = sys.total_memory() as f32;
         for (pid, proc) in sys.processes() {
             let proc_name = proc.name().to_string_lossy();
             let pid_str = pid.to_string();
@@ -78,12 +90,12 @@ fn monitor_process(target: &str) {
                 let mut output = format!("{} {} - {}: PID = {}, Name = {}", "bittytop:".bold().blue(), target.bold().green(), "Process".bold(), pid, proc_name.green());
                 
                 if show_cpu {
-                    let cpu_usage = proc.cpu_usage();
-                    output.push_str(&format!(", CPU = {} {:.2}%", get_bar(cpu_usage, 10), cpu_usage));
+                    let cpu_usage = proc.cpu_usage() / num_cpus;
+                    output.push_str(&format!(", CPU = {} {:.2}%", get_bar(cpu_usage), cpu_usage));
                 }
                 if show_mem {
-                    let mem_pct = (proc.memory() as f32 / sys.total_memory() as f32) * 100.0;
-                    output.push_str(&format!(", Mem = {} {:.2}%", get_bar(mem_pct, 10), mem_pct));
+                    let mem_pct = (proc.memory() as f32 / total_mem) * 100.0;
+                    output.push_str(&format!(", Mem = {} {:.2}%", get_bar(mem_pct), mem_pct));
                 }
                 
                 println!("{}", output);
