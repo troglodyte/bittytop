@@ -8,7 +8,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::cursor::{Hide, Show};
 use crossterm::ExecutableCommand;
-use std::io::stdout;
+use std::io::{stdout, Write};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -60,20 +60,48 @@ fn monitor_process(targets: Vec<String>) {
     let num_cpus = sys.cpus().len().max(1) as f32;
     thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
     
-    let mut show_cpu = true;
-    let mut show_mem = true;
-    let mut show_gpu = false;
+    let mut order = vec!["cpu", "mem"];
 
-    loop {
-        // Handle input
-        if event::poll(Duration::from_millis(100)).unwrap() {
+    'main_loop: loop {
+        // Handle input - process all pending events
+        while event::poll(Duration::from_millis(0)).unwrap() {
             if let Event::Key(key) = event::read().unwrap() {
                 if key.kind == KeyEventKind::Press {
                     match key.code {
-                        KeyCode::Char('c') => show_cpu = !show_cpu,
-                        KeyCode::Char('m') => show_mem = !show_mem,
-                        KeyCode::Char('g') => show_gpu = !show_gpu,
-                        KeyCode::Char('q') => break,
+                        KeyCode::Char('c') => {
+                            if order.contains(&"cpu") {
+                                order.retain(|&x| x != "cpu");
+                            } else {
+                                order.push("cpu");
+                            }
+                        }
+                        KeyCode::Char('m') => {
+                            if order.contains(&"mem") {
+                                order.retain(|&x| x != "mem");
+                            } else {
+                                order.push("mem");
+                            }
+                        }
+                        KeyCode::Char('g') => {
+                            if order.contains(&"gpu") {
+                                order.retain(|&x| x != "gpu");
+                            } else {
+                                order.push("gpu");
+                            }
+                        }
+                        KeyCode::Char('C') => {
+                            order.retain(|&x| x != "cpu");
+                            order.insert(0, "cpu");
+                        }
+                        KeyCode::Char('M') => {
+                            order.retain(|&x| x != "mem");
+                            order.insert(0, "mem");
+                        }
+                        KeyCode::Char('G') => {
+                            order.retain(|&x| x != "gpu");
+                            order.insert(0, "gpu");
+                        }
+                        KeyCode::Char('q') => break 'main_loop,
                         _ => {}
                     }
                 }
@@ -86,6 +114,8 @@ fn monitor_process(targets: Vec<String>) {
         sys.refresh_memory();
         let gpu = machine.graphics_status(); 
 
+        let total_mem = sys.total_memory() as f32;
+
         let mut found = false;
         
         // Print header
@@ -93,38 +123,38 @@ fn monitor_process(targets: Vec<String>) {
 
         let mut header = String::new();
         if is_all {
-            let mut system_parts = Vec::new();
-            if show_cpu {
-                let global_cpu = sys.global_cpu_usage();
-                system_parts.push(format!("CPU: {} {:.2}%", get_bar(global_cpu), global_cpu));
-            }
-            if show_mem {
-                let total_mem = sys.total_memory() as f32;
-                let used_mem = sys.used_memory() as f32;
-                let mem_pct = if total_mem > 0.0 { (used_mem / total_mem) * 100.0 } else { 0.0 };
-                system_parts.push(format!("Mem: {} {:.2}% ({:.1}/{:.1} GB)",
-                    get_bar(mem_pct), mem_pct,
-                    used_mem / 1024.0 / 1024.0 / 1024.0,
-                    total_mem / 1024.0 / 1024.0 / 1024.0
-                ));
+            header.push_str(&format!("{} ", "SYSTEM".bold().yellow()));
+            let mut parts = Vec::new();
+            for &metric in &order {
+                match metric {
+                    "cpu" => {
+                        let global_cpu = sys.global_cpu_usage();
+                        parts.push(format!("CPU: {} {:.2}%", get_bar(global_cpu), global_cpu));
+                    }
+                    "mem" => {
+                        let used_mem = sys.used_memory() as f32;
+                        let mem_pct = if total_mem > 0.0 { (used_mem / total_mem) * 100.0 } else { 0.0 };
+                        parts.push(format!("Mem: {} {:.2}% ({:.1}/{:.1} GB)",
+                            get_bar(mem_pct), mem_pct,
+                            used_mem / 1024.0 / 1024.0 / 1024.0,
+                            total_mem / 1024.0 / 1024.0 / 1024.0
+                        ));
+                    }
+                    "gpu" => {
+                        if let Some(g) = gpu.first() {
+                            parts.push(format!("GPU: {} {}% | Temp: {}°C | Mem: {}GB", get_bar(g.gpu as f32), g.gpu, g.temperature, g.memory_used / 1024 / 1024 / 1024));
+                        } else {
+                            parts.push("GPU: ?".to_string());
+                        }
+                    }
+                    _ => {}
+                }
             }
 
-            if !system_parts.is_empty() {
-                header.push_str(&format!("{} ", "SYSTEM".bold().yellow()));
-                header.push_str(&system_parts.join(" | "));
-            } else if show_gpu {
-                header.push_str(&format!("{}", "SYSTEM".bold().yellow()));
-            }
-        }
-
-        if show_gpu {
-            if !header.is_empty() {
-                header.push_str(" | ");
-            }
-            if let Some(g) = gpu.first() {
-                header.push_str(&format!("GPU: {} {}% | Temp: {}°C | Mem: {}GB", get_bar(g.gpu as f32), g.gpu, g.temperature, g.memory_used / 1024 / 1024 / 1024));
+            if parts.is_empty() {
+                header.push_str("?");
             } else {
-                 header.push_str("GPU: ?");
+                header.push_str(&parts.join(" | "));
             }
         }
 
@@ -132,8 +162,6 @@ fn monitor_process(targets: Vec<String>) {
             println!("{}", header);
             println!();
         }
-
-        let total_mem = sys.total_memory() as f32;
         let mut proc_list: Vec<_> = sys.processes().iter().collect();
         proc_list.sort_by(|a, b| b.1.cpu_usage().partial_cmp(&a.1.cpu_usage()).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -148,13 +176,22 @@ fn monitor_process(targets: Vec<String>) {
             if let Some(t) = matched_target {
                 let mut output = format!("{} - {}: PID = {}, Name = {}", t.bold().green(), "Process".bold(), pid, proc_name.green());
                 
-                if show_cpu {
-                    let cpu_usage = proc.cpu_usage() / num_cpus;
-                    output.push_str(&format!(", CPU = {} {:.2}%", get_bar(cpu_usage), cpu_usage));
-                }
-                if show_mem {
-                    let mem_pct = (proc.memory() as f32 / total_mem) * 100.0;
-                    output.push_str(&format!(", Mem = {} {:.2}%", get_bar(mem_pct), mem_pct));
+                if order.is_empty() {
+                    output.push_str(" ?");
+                } else {
+                    for &metric in &order {
+                        match metric {
+                            "cpu" => {
+                                let cpu_usage = proc.cpu_usage() / num_cpus;
+                                output.push_str(&format!(", CPU = {} {:.2}%", get_bar(cpu_usage), cpu_usage));
+                            }
+                            "mem" => {
+                                let mem_pct = (proc.memory() as f32 / total_mem) * 100.0;
+                                output.push_str(&format!(", Mem = {} {:.2}%", get_bar(mem_pct), mem_pct));
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 
                 println!("{}", output);
@@ -170,6 +207,7 @@ fn monitor_process(targets: Vec<String>) {
             }
         }
 
+        stdout().flush().unwrap();
         thread::sleep(Duration::from_millis(500));
     }
 }
