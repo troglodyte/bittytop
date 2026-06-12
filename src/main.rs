@@ -12,12 +12,25 @@ use std::io::{stdout, Write};
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 
+pub mod networking;
+
 fn main() {
     let args: Vec<String> = env::args().collect();
 
     enable_raw_mode().unwrap();
     stdout().execute(EnterAlternateScreen).unwrap();
     stdout().execute(Hide).unwrap();
+
+    if args.contains(&"--wtn".to_string()) {
+        let success = networking::run(args);
+        stdout().execute(Show).unwrap();
+        stdout().execute(LeaveAlternateScreen).unwrap();
+        disable_raw_mode().unwrap();
+        if !success {
+            println!("No processes found with active network connections.");
+        }
+        return;
+    }
 
     let mut targets = if args.len() < 2 {
         select_process(None)
@@ -169,123 +182,98 @@ fn monitor_process(targets: Vec<String>) {
         buf.extend_from_slice(b"\x1b[?2026h");
         queue!(buf, MoveTo(0, 0)).unwrap();
 
-        let mut parts = Vec::new();
-        for &metric in &order {
-            match metric {
-                "cpu" if is_all => {
-                    let global_cpu = sys.global_cpu_usage();
-                    parts.push(format!("CPU: {} {:.2}%", get_bar(global_cpu), global_cpu));
-                }
-                "mem" if is_all => {
-                    let used_mem = sys.used_memory() as f32;
-                    let mem_pct = if total_mem > 0.0 { (used_mem / total_mem) * 100.0 } else { 0.0 };
-                    parts.push(format!("Mem: {} {:.2}% ({:.1}/{:.1} GB)",
-                        get_bar(mem_pct), mem_pct,
-                        used_mem / 1024.0 / 1024.0 / 1024.0,
-                        total_mem / 1024.0 / 1024.0 / 1024.0
-                    ));
-                }
-                "gpu" if is_all => {
-                    if let Some(g) = gpu.first() {
-                        parts.push(format!("GPU: {} {}% | Temp: {}°C | Mem: {}GB", get_bar(g.gpu as f32), g.gpu, g.temperature, g.memory_used / 1024 / 1024 / 1024));
-                    } else {
-                        parts.push("GPU: ?".to_string());
+        if is_all {
+            let mut parts = Vec::new();
+            for &metric in &order {
+                match metric {
+                    "cpu" => {
+                        let global_cpu = sys.global_cpu_usage();
+                        parts.push(format!("CPU: {} {:.2}%", get_bar(global_cpu), global_cpu));
                     }
+                    "mem" => {
+                        let used_mem = sys.used_memory() as f32;
+                        let mem_pct = if total_mem > 0.0 { (used_mem / total_mem) * 100.0 } else { 0.0 };
+                        parts.push(format!("Mem: {} {:.2}% ({:.1}/{:.1} GB)",
+                            get_bar(mem_pct), mem_pct,
+                            used_mem / 1024.0 / 1024.0 / 1024.0,
+                            total_mem / 1024.0 / 1024.0 / 1024.0
+                        ));
+                    }
+                    "gpu" => {
+                        if let Some(g) = gpu.first() {
+                            parts.push(format!("GPU: {} {}% | Temp: {}°C | Mem: {}GB", get_bar(g.gpu as f32), g.gpu, g.temperature, g.memory_used / 1024 / 1024 / 1024));
+                        }
+                    }
+                    "net" => {
+                        let total_bps = net_rx_ps + net_tx_ps;
+                        let pct = (total_bps as f32 / 1_000_000.0).min(100.0);
+                        parts.push(format!("Net: {} ↓{} ↑{}", get_bar(pct), format_bytes(net_rx_ps), format_bytes(net_tx_ps)));
+                    }
+                    _ => {}
                 }
-                "net" if is_all => {
-                    let total_bps = net_rx_ps + net_tx_ps;
-                    let pct = (total_bps as f32 / 1_000_000.0).min(100.0);
-                    parts.push(format!("Net: {} ↓{} ↑{}", get_bar(pct), format_bytes(net_rx_ps), format_bytes(net_tx_ps)));
-                }
-                _ => {}
             }
-        }
 
-        if !parts.is_empty() {
-            let label = if is_all { "SYSTEM" } else { "GLOBAL" };
-            write!(buf, "{} {}\x1b[K\r\n\x1b[K\r\n", label.bold().yellow(), parts.join(" | ")).unwrap();
-        } else if is_all {
-            write!(buf, "{} ?\x1b[K\r\n\x1b[K\r\n", "SYSTEM".bold().yellow()).unwrap();
+            if !parts.is_empty() {
+                write!(buf, "{} {}\x1b[K\r\n\x1b[K\r\n", "SYSTEM".bold().yellow(), parts.join(" | ")).unwrap();
+            } else {
+                write!(buf, "{} ?\x1b[K\r\n\x1b[K\r\n", "SYSTEM".bold().yellow()).unwrap();
+            }
         }
 
         let mut proc_list: Vec<_> = sys.processes().iter().collect();
         proc_list.sort_by(|a, b| b.1.cpu_usage().partial_cmp(&a.1.cpu_usage()).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Group matching processes by the target they matched
-        let mut group_map: std::collections::HashMap<String, Vec<(String, &sysinfo::Process)>> = std::collections::HashMap::new();
-        for (pid, proc) in &proc_list {
-            let proc_name = proc.name().to_string_lossy();
-            let pid_str = pid.to_string();
-            let matched_target = targets.iter().filter(|t| *t != "*").find(|t| {
-                proc_name.to_lowercase().contains(&t.to_lowercase()) || pid_str == **t
-            }).map(|s| s.as_str());
-            if let Some(t) = matched_target {
-                group_map.entry(t.to_string()).or_default().push((pid_str, *proc));
-            }
-        }
-
-        // Sort groups by total CPU descending
-        let mut groups: Vec<_> = group_map.into_iter().collect();
-        groups.sort_by(|a, b| {
-            let cpu_a: f32 = a.1.iter().map(|(_, p)| p.cpu_usage()).sum();
-            let cpu_b: f32 = b.1.iter().map(|(_, p)| p.cpu_usage()).sum();
-            cpu_b.partial_cmp(&cpu_a).unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        for (target, procs) in &groups {
-            found = true;
-            let count = procs.len();
-
-            let mut output = if count == 1 {
-                let (pid_str, proc) = &procs[0];
+        if is_all {
+            for (pid, proc) in proc_list.iter().take(20) {
+                found = true;
+                let pid_str = pid.to_string();
                 let proc_name = proc.name().to_string_lossy();
-                if pid_str == target {
-                    format!("{} Name = {}", target.bold().green(), proc_name.green())
-                } else {
-                    format!("{} - {}: PID = {}, Name = {}", target.bold().green(), "Process".bold(), pid_str, proc_name.green())
-                }
-            } else {
-                format!("{} {}", target.bold().green(), format!("({} PIDs)", count).dimmed())
-            };
-
-            let mut metric_added = false;
-            for &metric in &order {
-                match metric {
-                    "cpu" => {
-                        let total_cpu: f32 = procs.iter().map(|(_, p)| p.cpu_usage() / num_cpus).sum();
-                        output.push_str(&format!(", CPU = {} {:.2}%", get_bar(total_cpu), total_cpu));
-                        metric_added = true;
-                    }
-                    "mem" => {
-                        let proc_mem_bytes: u64 = procs.iter().map(|(_, p)| p.memory()).sum();
-                        let mem_pct = (proc_mem_bytes as f32 / total_mem) * 100.0;
-                        output.push_str(&format!(", Mem = {} {:.2}%", get_bar(mem_pct), mem_pct));
-                        metric_added = true;
-                    }
-                    "gpu" => {
-                        let label = format!("GPU{}", ":G".truecolor(255, 165, 0));
-                        if let Some(g) = gpu.first() {
-                            output.push_str(&format!(", {} = {} {}%", label, get_bar(g.gpu as f32), g.gpu));
-                        } else {
-                            output.push_str(&format!(", {} = ?", label));
+                let mut output = format!("{} (ID: {})", proc_name.green(), pid_str.bold().green());
+                
+                for &metric in &order {
+                    match metric {
+                        "cpu" => {
+                            let cpu_usage = proc.cpu_usage() / num_cpus;
+                            output.push_str(&format!(", CPU = {} {:.2}%", get_bar(cpu_usage), cpu_usage));
                         }
-                        metric_added = true;
+                        "mem" => {
+                            let proc_mem_bytes = proc.memory();
+                            let mem_pct = (proc_mem_bytes as f32 / total_mem) * 100.0;
+                            output.push_str(&format!(", Mem = {} {:.2}%", get_bar(mem_pct), mem_pct));
+                        }
+                        _ => {}
                     }
-                    "net" => {
-                        let label = format!("Net{}", ":N".truecolor(255, 165, 0));
-                        let total_bps = net_rx_ps + net_tx_ps;
-                        let pct = (total_bps as f32 / 1_000_000.0).min(100.0);
-                        output.push_str(&format!(", {} = {} ↓{} ↑{}", label, get_bar(pct), format_bytes(net_rx_ps), format_bytes(net_tx_ps)));
-                        metric_added = true;
+                }
+                write!(buf, "{}\x1b[K\r\n", output).unwrap();
+            }
+        } else {
+            for (pid, proc) in &proc_list {
+                let proc_name = proc.name().to_string_lossy();
+                let pid_str = pid.to_string();
+                for target in &targets {
+                    if target == "*" { continue; }
+                    if proc_name.to_lowercase().contains(&target.to_lowercase()) || pid_str == **target {
+                        found = true;
+                        let mut output = format!("{} - {}: PID = {}, Name = {}", target.bold().green(), "Process".bold(), pid_str, proc_name.green());
+                        
+                        for &metric in &order {
+                            match metric {
+                                "cpu" => {
+                                    let cpu_usage = proc.cpu_usage() / num_cpus;
+                                    output.push_str(&format!(", CPU = {} {:.2}%", get_bar(cpu_usage), cpu_usage));
+                                }
+                                "mem" => {
+                                    let proc_mem_bytes = proc.memory();
+                                    let mem_pct = (proc_mem_bytes as f32 / total_mem) * 100.0;
+                                    output.push_str(&format!(", Mem = {} {:.2}%", get_bar(mem_pct), mem_pct));
+                                }
+                                _ => {}
+                            }
+                        }
+                        write!(buf, "{}\x1b[K\r\n", output).unwrap();
                     }
-                    _ => {}
                 }
             }
-            if !metric_added {
-                output.push_str(" ?");
-            }
-
-            write!(buf, "{}\x1b[K\r\n", output).unwrap();
         }
 
         if !found {
@@ -313,11 +301,9 @@ fn select_process(initial_query: Option<&str>) -> Vec<String> {
     let matcher = SkimMatcherV2::default();
     let mut selected_index = 0;
 
-    // Build name -> count map once (snapshot; no re-refresh during search)
-    let mut name_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for (_, proc) in sys.processes() {
-        *name_counts.entry(proc.name().to_string_lossy().to_string()).or_insert(0) += 1;
-    }
+    let procs: Vec<(String, String)> = sys.processes().iter()
+        .map(|(pid, proc)| (pid.to_string(), proc.name().to_string_lossy().to_string()))
+        .collect();
 
     loop {
         let mut matches: Vec<(i64, String, String)> = Vec::new(); // (score, target, display)
@@ -329,16 +315,17 @@ fn select_process(initial_query: Option<&str>) -> Vec<String> {
              matches.push((score, "*".to_string(), "SYSTEM (All Processes)".to_string()));
         }
 
-        for (name, count) in &name_counts {
-            let display = if *count > 1 {
-                format!("{} ({} PIDs)", name, count)
-            } else {
-                name.clone()
-            };
+        for (pid_str, name) in &procs {
+            let display = format!("{} (ID: {})", name, pid_str);
             if query.is_empty() {
-                matches.push((0, name.clone(), display));
-            } else if let Some(score) = matcher.fuzzy_match(name, &query) {
-                matches.push((score, name.clone(), display));
+                matches.push((0, pid_str.clone(), display));
+            } else {
+                let name_score = matcher.fuzzy_match(name, &query).unwrap_or(0);
+                let pid_score = matcher.fuzzy_match(pid_str, &query).unwrap_or(0);
+                let score = name_score.max(pid_score);
+                if score > 0 {
+                    matches.push((score, pid_str.clone(), display));
+                }
             }
         }
 
