@@ -21,7 +21,7 @@ fn main() {
 
     let mut targets = if args.len() < 2 {
         select_process(None)
-    } else if args.len() == 2 && !args[1].parse::<u32>().is_ok() && args[1] != "*" {
+    } else if args.len() == 2 && args[1].parse::<u32>().is_err() && args[1] != "*" {
         select_process(Some(&args[1]))
     } else {
         args[1..].to_vec()
@@ -51,7 +51,7 @@ fn main() {
 
 fn get_bar(percentage: f32) -> String {
     let blocks = [" ", "\u{2581}", "\u{2582}", "\u{2583}", "\u{2584}", "\u{2585}", "\u{2586}", "\u{2587}", "\u{2588}"];
-    let index = (((percentage.clamp(0.0, 100.0) / 100.0) * 8.0).ceil() as usize).max(1).min(8);
+    let index = (((percentage.clamp(0.0, 100.0) / 100.0) * 8.0).ceil() as usize).clamp(1, 8);
     let bar = blocks[index];
 
     if percentage < 33.0 {
@@ -79,8 +79,8 @@ fn monitor_process(targets: Vec<String>) {
     'main_loop: loop {
         // Handle input - process all pending events
         while event::poll(Duration::from_millis(0)).unwrap() {
-            if let Event::Key(key) = event::read().unwrap() {
-                if key.kind == KeyEventKind::Press {
+            if let Event::Key(key) = event::read().unwrap()
+                && key.kind == KeyEventKind::Press {
                     match key.code {
                         KeyCode::Char('c') => {
                             if order.contains(&"cpu") {
@@ -119,14 +119,13 @@ fn monitor_process(targets: Vec<String>) {
                         _ => {}
                     }
                 }
-            }
         }
 
         // Refresh necessary components
         sys.refresh_cpu_usage();
         sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
         sys.refresh_memory();
-        let gpu = machine.graphics_status(); 
+        let gpu = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| machine.graphics_status())).unwrap_or_default();
 
         let total_mem = sys.total_memory() as f32;
 
@@ -298,37 +297,30 @@ fn select_process(initial_query: Option<&str>) -> Vec<String> {
         
         stdout().flush().unwrap();
 
-        if event::poll(Duration::from_millis(500)).unwrap() {
-            if let Event::Key(key) = event::read().unwrap() {
-                if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Esc => return Vec::new(),
-                        KeyCode::Enter => {
-                            if !matches.is_empty() {
-                                return vec![matches[selected_index].1.clone()];
-                            }
-                        }
-                        KeyCode::Up => {
-                            if selected_index > 0 {
-                                selected_index -= 1;
-                            }
-                        }
-                        KeyCode::Down => {
-                            if selected_index + 1 < matches.len() {
-                                selected_index += 1;
-                            }
-                        }
-                        KeyCode::Char(c) => {
-                            query.push(c);
-                            selected_index = 0;
-                        }
-                        KeyCode::Backspace => {
-                            query.pop();
-                            selected_index = 0;
-                        }
-                        _ => {}
-                    }
+        if event::poll(Duration::from_millis(500)).unwrap()
+            && let Event::Key(key) = event::read().unwrap()
+            && key.kind == KeyEventKind::Press
+        {
+            match key.code {
+                KeyCode::Esc => return Vec::new(),
+                KeyCode::Enter if !matches.is_empty() => {
+                    return vec![matches[selected_index].1.clone()];
                 }
+                KeyCode::Up => {
+                    selected_index = selected_index.saturating_sub(1);
+                }
+                KeyCode::Down if selected_index + 1 < matches.len() => {
+                    selected_index += 1;
+                }
+                KeyCode::Char(c) => {
+                    query.push(c);
+                    selected_index = 0;
+                }
+                KeyCode::Backspace => {
+                    query.pop();
+                    selected_index = 0;
+                }
+                _ => {}
             }
         }
     }

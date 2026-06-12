@@ -23,12 +23,16 @@ Use `*` to monitor overall system CPU, Memory, and GPU usage:
 bittytop "*"
 ```
 
+![System monitoring output](output.png)
+
 ### Interactive Selection
 Run without arguments to enter a fuzzy search interface and pick a process:
 ```bash
 bittytop
 ```
 You can also find "SYSTEM" in the search list to monitor overall usage.
+
+![Fuzzy process selection](select-pid.png)
 
 ## Interactive Keys
 
