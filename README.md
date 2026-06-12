@@ -17,6 +17,12 @@ bittytop 1234
 bittytop pid1 process_name2 5678
 ```
 
+### Monitor Network Activity
+Use `--wtn` to automatically list and monitor all processes currently making network requests:
+```bash
+bittytop --wtn
+```
+
 ### System Monitoring
 Use `*` to monitor overall system CPU, Memory, and GPU usage:
 ```bash
@@ -41,12 +47,16 @@ While monitoring, you can use the following keys:
 - `c`: Toggle CPU usage display
 - `m`: Toggle Memory usage display
 - `g`: Toggle GPU usage display (if available)
+- `n`: Toggle Network usage display
 - `C`: Move CPU usage to the primary position
 - `M`: Move Memory usage to the primary position
 - `G`: Move GPU usage to the primary position
+- `N`: Move Network usage to the primary position
+- `a`: Sort processes by PID ascending
+- `d`: Sort processes by PID descending
 - `q`: Quit
 
-> **Note**: When monitoring specific processes, GPU usage is marked with an orange `:G` tag (e.g., `GPU:G`). This indicates it is a **global** system-wide metric, as per-process GPU tracking is not currently supported.
+> **Note**: When monitoring specific processes, GPU usage is marked with an orange `:G` tag and Network usage with an orange `:N` tag. These indicate they are **global** system-wide metrics, as per-process tracking for these is not currently supported.
 
 ## Installation
 
