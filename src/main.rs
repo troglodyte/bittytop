@@ -7,7 +7,7 @@ use machine_info::Machine;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::cursor::{Hide, Show, MoveTo};
-use crossterm::{ExecutableCommand, execute};
+use crossterm::{ExecutableCommand, execute, queue};
 use std::io::{stdout, Write};
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
@@ -162,8 +162,12 @@ fn monitor_process(targets: Vec<String>) {
 
         let mut found = false;
 
-        // Print header
-        execute!(stdout(), MoveTo(0, 0), Clear(ClearType::FromCursorDown)).unwrap();
+        // Build entire frame into a Vec<u8>, then write it in one syscall.
+        // Synchronized output mode (\x1b[?2026h/l) tells the terminal not to
+        // render until the end marker arrives, eliminating partial-frame flicker.
+        let mut buf: Vec<u8> = Vec::with_capacity(4096);
+        buf.extend_from_slice(b"\x1b[?2026h");
+        queue!(buf, MoveTo(0, 0)).unwrap();
 
         let mut parts = Vec::new();
         for &metric in &order {
@@ -199,9 +203,9 @@ fn monitor_process(targets: Vec<String>) {
 
         if !parts.is_empty() {
             let label = if is_all { "SYSTEM" } else { "GLOBAL" };
-            print!("{} {}\r\n\r\n", label.bold().yellow(), parts.join(" | "));
+            write!(buf, "{} {}\x1b[K\r\n\x1b[K\r\n", label.bold().yellow(), parts.join(" | ")).unwrap();
         } else if is_all {
-            print!("{} ?\r\n\r\n", "SYSTEM".bold().yellow());
+            write!(buf, "{} ?\x1b[K\r\n\x1b[K\r\n", "SYSTEM".bold().yellow()).unwrap();
         }
 
         let mut proc_list: Vec<_> = sys.processes().iter().collect();
@@ -281,17 +285,21 @@ fn monitor_process(targets: Vec<String>) {
                 output.push_str(" ?");
             }
 
-            print!("{}\r\n", output);
+            write!(buf, "{}\x1b[K\r\n", output).unwrap();
         }
 
         if !found {
             let other_targets: Vec<_> = targets.iter().filter(|t| *t != "*").collect();
             if !other_targets.is_empty() {
                 let targets_str = other_targets.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
-                print!("{} - {}\r\n", targets_str.bold().green(), "Process not found or exited.".red());
+                write!(buf, "{} - {}\x1b[K\r\n", targets_str.bold().green(), "Process not found or exited.".red()).unwrap();
             }
         }
 
+        // Clear any lines left over from a previous taller frame
+        queue!(buf, Clear(ClearType::FromCursorDown)).unwrap();
+        buf.extend_from_slice(b"\x1b[?2026l");
+        stdout().write_all(&buf).unwrap();
         stdout().flush().unwrap();
         thread::sleep(Duration::from_millis(500));
     }
